@@ -95,4 +95,64 @@ juan run
 
 In your Slack, talk to the Slack APP. Use `#help` to see help.
 
+## How Slack ACP Communication Works
+
+The following diagram shows the full message flow starting from a user exposing an ACP-compatible agent (e.g. `copilot --acp`) through to responses appearing in Slack.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Slack
+    participant Juan as Juan Bridge<br/>(juan run)
+    participant Agent as ACP Agent<br/>(copilot --acp)
+
+    Note over User,Agent: Setup Phase
+    User->>Agent: Expose ACP agent (copilot --acp)
+    User->>Juan: Start bridge (juan run)
+    Juan->>Slack: Connect via Socket Mode<br/>(app token, xapp-)
+
+    Note over User,Agent: Session Creation
+    User->>Slack: Send #new &lt;agent&gt; [workspace]
+    Slack->>Juan: Push event (Socket Mode)
+    Juan->>Juan: Route: handle_command (#new)
+    Juan->>Agent: Spawn process (stdin/stdout pipes)
+    Juan->>Agent: ACP initialize request
+    Agent-->>Juan: ACP initialize response
+    Juan->>Agent: ACP new_session request
+    Agent-->>Juan: ACP new_session response (session_id)
+    Juan->>Slack: Confirm session created ✅
+
+    Note over User,Agent: Message / Prompt Loop
+    User->>Slack: Send message (regular text)
+    Slack->>Juan: Push event (Socket Mode)
+    Juan->>Juan: Route: handle_message
+    Juan->>Agent: ACP prompt request (via stdin)
+
+    loop Agent streams response
+        Agent-->>Juan: Session notification<br/>(AgentMessageChunk / AgentThoughtChunk)
+        Juan->>Slack: Buffer chunks → send/update message
+        Agent-->>Juan: Session notification<br/>(ToolCall / ToolCallUpdate)
+        Juan->>Slack: Post tool call message 🔧
+    end
+
+    Agent-->>Juan: ACP prompt response (stop_reason)
+    Juan->>Juan: NotificationWrapper::PromptCompleted
+    Juan->>Slack: Flush remaining message buffer
+
+    Note over User,Agent: Permission Request (when auto_approve=false)
+    Agent-->>Juan: ACP request_permission (RequestPermissionRequest)
+    Juan->>Slack: Post permission options ⚠️
+    User->>Slack: Reply with option number
+    Slack->>Juan: Push event (Socket Mode)
+    Juan->>Juan: Route: handle_permission_response
+    Juan->>Agent: ACP RequestPermissionResponse (Selected / Cancelled)
+
+    Note over User,Agent: Session Teardown
+    User->>Slack: Send #end
+    Slack->>Juan: Push event (Socket Mode)
+    Juan->>Juan: Route: handle_command (#end)
+    Juan->>Agent: Kill agent process
+    Juan->>Slack: Confirm session ended
+```
+
 ## [CHANGELOG](./CHANGELOG.md)
